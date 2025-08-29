@@ -3,6 +3,7 @@ import "dart:io";
 
 import "package:cryptography_plus/cryptography_plus.dart";
 import "package:desktop_updater/src/app_archive.dart";
+import "package:yaml/yaml.dart" as yaml;
 
 import "helper/copy.dart";
 
@@ -84,13 +85,20 @@ Future<String?> genFileHashes({required String? path}) async {
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
     print("PLATFORM must be specified: macos, windows, linux");
+    print("Usage: dart run desktop_updater:archive <platform> [app_name]");
     exit(1);
   }
 
   final platform = args[0];
+  String? customAppName;
+  
+  if (args.length > 1) {
+    customAppName = args[1];
+  }
 
   if (platform != "macos" && platform != "windows" && platform != "linux") {
     print("PLATFORM must be specified: macos, windows, linux");
+    print("Usage: dart run desktop_updater:archive <platform> [app_name]");
     exit(1);
   }
 
@@ -152,8 +160,26 @@ Future<void> main(List<String> args) async {
   // Get current build name and number from pubspec.yaml
   final pubspec = File("pubspec.yaml");
   final pubspecContent = await pubspec.readAsString();
-  final appNamePubspec =
+  final appNameFromPubspec =
       RegExp(r"name: (.+)").firstMatch(pubspecContent)!.group(1);
+  
+  // Try to get app name from desktop_updater config
+  String? configAppName;
+  try {
+    final yamlDoc = yaml.loadYaml(pubspecContent);
+    if (yamlDoc is Map && yamlDoc.containsKey("desktop_updater")) {
+      final desktopUpdater = yamlDoc["desktop_updater"];
+      if (desktopUpdater is Map && desktopUpdater.containsKey("app_name")) {
+        configAppName = desktopUpdater["app_name"].toString();
+      }
+    }
+  } catch (e) {
+    // Ignore parsing errors
+  }
+  
+  // Use pubspec name for folder, but config name for display
+  final appNameForFolder = appNameFromPubspec;
+  final appNameForDisplay = customAppName ?? configAppName ?? appNameFromPubspec;
 
   if (platform == "windows") {
     await copyDirectory(
@@ -165,12 +191,29 @@ Future<void> main(List<String> args) async {
       ),
     );
   } else if (platform == "macos") {
-    await copyDirectory(
-      Directory("$foundDirectory/$appNamePubspec.app/Contents"),
-      Directory(
-        "${lastBuildNumberFolder.path}${Platform.pathSeparator}$foundVersion+$foundBuildNumber-$platform",
-      ),
-    );
+    // Find the actual .app directory within foundDirectory
+    final foundDir = Directory(foundDirectory);
+    final apps = foundDir
+        .listSync()
+        .where((entity) => entity.path.endsWith(".app"))
+        .toList();
+    
+    if (apps.isNotEmpty) {
+      await copyDirectory(
+        Directory("${apps.first.path}/Contents"),
+        Directory(
+          "${lastBuildNumberFolder.path}${Platform.pathSeparator}$foundVersion+$foundBuildNumber-$platform",
+        ),
+      );
+    } else {
+      // Fallback to expected name
+      await copyDirectory(
+        Directory("$foundDirectory/$appNameForDisplay.app/Contents"),
+        Directory(
+          "${lastBuildNumberFolder.path}${Platform.pathSeparator}$foundVersion+$foundBuildNumber-$platform",
+        ),
+      );
+    }
   } else if (platform == "linux") {
     await copyDirectory(
       Directory(foundDirectory),

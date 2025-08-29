@@ -3,17 +3,25 @@ import "dart:io";
 
 import "package:path/path.dart" as path;
 import "package:pubspec_parse/pubspec_parse.dart";
+import "package:yaml/yaml.dart" as yaml;
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
     print("PLATFORM must be specified: macos, windows, linux");
+    print("Usage: dart run desktop_updater:release <platform> [app_name]");
     exit(1);
   }
 
   final platform = args[0];
+  String? customAppName;
+  
+  if (args.length > 1) {
+    customAppName = args[1];
+  }
 
   if (platform != "macos" && platform != "windows" && platform != "linux") {
     print("PLATFORM must be specified: macos, windows, linux");
+    print("Usage: dart run desktop_updater:release <platform> [app_name]");
     exit(1);
   }
 
@@ -25,11 +33,27 @@ Future<void> main(List<String> args) async {
       "${parsed.version?.major}.${parsed.version?.minor}.${parsed.version?.patch}";
   final buildNumber = parsed.version?.build.firstOrNull.toString();
 
-  print(
-    "Building version $buildName+$buildNumber for $platform for app ${parsed.name}",
-  );
+  // Try to get app name from desktop_updater config
+  String? configAppName;
+  try {
+    final yamlDoc = yaml.loadYaml(pubspec);
+    if (yamlDoc is Map && yamlDoc.containsKey('desktop_updater')) {
+      final desktopUpdater = yamlDoc['desktop_updater'];
+      if (desktopUpdater is Map && desktopUpdater.containsKey('app_name')) {
+        configAppName = desktopUpdater['app_name'].toString();
+      }
+    }
+  } catch (e) {
+    // Ignore parsing errors
+  }
 
-  final appNamePubspec = parsed.name;
+  // Use parsed.name for folder structure, but configAppName for display
+  final appNameForFolder = parsed.name;
+  final appNameForDisplay = customAppName ?? configAppName ?? parsed.name;
+  
+  print(
+    "Building version $buildName+$buildNumber for $platform for app $appNameForDisplay",
+  );
 
   // Get flutter path
   final flutterPath = Platform.environment["FLUTTER_ROOT"];
@@ -92,16 +116,45 @@ Future<void> main(List<String> args) async {
       path.join("build", "windows", "x64", "runner", "Release"),
     );
   } else if (platform == "macos") {
-    buildDir = Directory(
-      path.join(
-        "build",
-        "macos",
-        "Build",
-        "Products",
-        "Release",
-        "$appNamePubspec.app",
-      ),
+    // For macOS, we need to use the actual app name from PRODUCT_NAME
+    // First, try to find the actual built app
+    final potentialBuildDir = Directory(
+      path.join("build", "macos", "Build", "Products", "Release"),
     );
+    
+    if (potentialBuildDir.existsSync()) {
+      final apps = potentialBuildDir
+          .listSync()
+          .where((entity) => entity.path.endsWith(".app"))
+          .toList();
+      
+      if (apps.isNotEmpty) {
+        buildDir = Directory(apps.first.path);
+      } else {
+        // Fallback to expected name
+        buildDir = Directory(
+          path.join(
+            "build",
+            "macos",
+            "Build",
+            "Products",
+            "Release",
+            "$appNameForFolder.app",
+          ),
+        );
+      }
+    } else {
+      buildDir = Directory(
+        path.join(
+          "build",
+          "macos",
+          "Build",
+          "Products",
+          "Release",
+          "$appNameForFolder.app",
+        ),
+      );
+    }
   } else if (platform == "linux") {
     buildDir = Directory(
       path.join("build", "linux", "x64", "release", "bundle"),
@@ -117,19 +170,19 @@ Future<void> main(List<String> args) async {
       ? path.join(
           "dist",
           buildNumber,
-          "$appNamePubspec-$buildName+$buildNumber-$platform",
+          "$appNameForFolder-$buildName+$buildNumber-$platform",
         )
       : platform == "macos"
           ? path.join(
               "dist",
               buildNumber,
-              "$appNamePubspec-$buildName+$buildNumber-$platform",
-              "$appNamePubspec.app",
+              "$appNameForFolder-$buildName+$buildNumber-$platform",
+              "$appNameForDisplay.app",
             )
           : path.join(
               "dist",
               buildNumber,
-              "$appNamePubspec-$buildName+$buildNumber-$platform",
+              "$appNameForFolder-$buildName+$buildNumber-$platform",
             );
 
   final distDir = Directory(distPath);
